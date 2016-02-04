@@ -1,3 +1,19 @@
+/**
+ * Copyright (C) 2015 Open Whisper Systems
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 package org.thoughtcrime.securesms;
 
 import android.app.Activity;
@@ -12,9 +28,11 @@ import android.support.v4.app.Fragment;
 import android.support.v4.app.LoaderManager;
 import android.support.v4.content.Loader;
 import android.support.v7.app.AppCompatActivity;
+import android.support.v7.app.AlertDialog;
 import android.support.v7.view.ActionMode;
 import android.support.v7.widget.LinearLayoutManager;
 import android.support.v7.widget.RecyclerView;
+import android.support.v7.widget.RecyclerView.ItemAnimator.ItemAnimatorFinishedListener;
 import android.text.ClipboardManager;
 import android.text.TextUtils;
 import android.util.Log;
@@ -28,8 +46,6 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.widget.Toast;
 
-import com.afollestad.materialdialogs.AlertDialogWrapper;
-
 import org.thoughtcrime.securesms.ConversationAdapter.ItemClickListener;
 import org.thoughtcrime.securesms.crypto.MasterSecret;
 import org.thoughtcrime.securesms.database.DatabaseFactory;
@@ -41,7 +57,7 @@ import org.thoughtcrime.securesms.mms.Slide;
 import org.thoughtcrime.securesms.recipients.RecipientFactory;
 import org.thoughtcrime.securesms.recipients.Recipients;
 import org.thoughtcrime.securesms.sms.MessageSender;
-import org.thoughtcrime.securesms.util.ProgressDialogAsyncTask;
+import org.thoughtcrime.securesms.util.task.ProgressDialogAsyncTask;
 import org.thoughtcrime.securesms.util.SaveAttachmentTask;
 import org.thoughtcrime.securesms.util.SaveAttachmentTask.Attachment;
 import org.thoughtcrime.securesms.util.ViewUtil;
@@ -90,7 +106,8 @@ public class ConversationFragment extends Fragment
 
     loadMoreView = inflater.inflate(R.layout.load_more_header, container, false);
     loadMoreView.setOnClickListener(new OnClickListener() {
-      @Override public void onClick(View v) {
+      @Override
+      public void onClick(View v) {
         Bundle args = new Bundle();
         args.putLong("limit", 0);
         getLoaderManager().restartLoader(0, args, ConversationFragment.this);
@@ -135,6 +152,10 @@ public class ConversationFragment extends Fragment
     }
   }
 
+  public void reloadList() {
+    getLoaderManager().restartLoader(0, Bundle.EMPTY, this);
+  }
+
   private void initializeResources() {
     this.recipients = RecipientFactory.getRecipientsForIds(getActivity(), getActivity().getIntent().getLongArrayExtra("recipients"), true);
     this.threadId   = this.getActivity().getIntent().getLongExtra("thread_id", -1);
@@ -144,6 +165,8 @@ public class ConversationFragment extends Fragment
     if (this.recipients != null && this.threadId != -1) {
       list.setAdapter(new ConversationAdapter(getActivity(), masterSecret, locale, selectionClickListener, null, this.recipients));
       getLoaderManager().restartLoader(0, Bundle.EMPTY, this);
+      list.getItemAnimator().setSupportsChangeAnimations(false);
+      list.getItemAnimator().setMoveDuration(120);
     }
   }
 
@@ -195,9 +218,9 @@ public class ConversationFragment extends Fragment
   }
 
   public void scrollToBottom() {
-    list.post(new Runnable() {
+    list.getItemAnimator().isRunning(new ItemAnimatorFinishedListener() {
       @Override
-      public void run() {
+      public void onAnimationsFinished() {
         list.stopScroll();
         list.smoothScrollToPosition(0);
       }
@@ -236,12 +259,15 @@ public class ConversationFragment extends Fragment
   }
 
   private void handleDeleteMessages(final Set<MessageRecord> messageRecords) {
-    AlertDialogWrapper.Builder builder = new AlertDialogWrapper.Builder(getActivity());
-    builder.setTitle(R.string.ConversationFragment_confirm_message_delete);
+    int                 messagesCount = messageRecords.size();
+    AlertDialog.Builder builder       = new AlertDialog.Builder(getActivity());
+
     builder.setIconAttribute(R.attr.dialog_alert_icon);
+    builder.setTitle(getActivity().getResources().getQuantityString(R.plurals.ConversationFragment_delete_selected_messages, messagesCount, messagesCount));
+    builder.setMessage(getActivity().getResources().getQuantityString(R.plurals.ConversationFragment_this_will_permanently_delete_all_n_selected_messages, messagesCount, messagesCount));
     builder.setCancelable(true);
-    builder.setMessage(R.string.ConversationFragment_are_you_sure_you_want_to_permanently_delete_all_selected_messages);
-    builder.setPositiveButton(R.string.yes, new DialogInterface.OnClickListener() {
+
+    builder.setPositiveButton(R.string.delete, new DialogInterface.OnClickListener() {
       @Override
       public void onClick(DialogInterface dialog, int which) {
         new ProgressDialogAsyncTask<MessageRecord, Void, Void>(getActivity(),
@@ -271,7 +297,7 @@ public class ConversationFragment extends Fragment
       }
     });
 
-    builder.setNegativeButton(R.string.no, null);
+    builder.setNegativeButton(android.R.string.cancel, null);
     builder.show();
   }
 
@@ -279,13 +305,23 @@ public class ConversationFragment extends Fragment
     Intent intent = new Intent(getActivity(), MessageDetailsActivity.class);
     intent.putExtra(MessageDetailsActivity.MASTER_SECRET_EXTRA, masterSecret);
     intent.putExtra(MessageDetailsActivity.MESSAGE_ID_EXTRA, message.getId());
+    intent.putExtra(MessageDetailsActivity.THREAD_ID_EXTRA, threadId);
     intent.putExtra(MessageDetailsActivity.TYPE_EXTRA, message.isMms() ? MmsSmsDatabase.MMS_TRANSPORT : MmsSmsDatabase.SMS_TRANSPORT);
+    intent.putExtra(MessageDetailsActivity.RECIPIENTS_IDS_EXTRA, recipients.getIds());
     startActivity(intent);
   }
 
   private void handleForwardMessage(MessageRecord message) {
     Intent composeIntent = new Intent(getActivity(), ShareActivity.class);
     composeIntent.putExtra(Intent.EXTRA_TEXT, message.getDisplayBody().toString());
+    if (message.isMms()) {
+      MediaMmsMessageRecord mediaMessage = (MediaMmsMessageRecord) message;
+      if (mediaMessage.containsMediaSlide()) {
+        Slide slide = mediaMessage.getSlideDeck().getSlides().get(0);
+        composeIntent.putExtra(Intent.EXTRA_STREAM, slide.getUri());
+        composeIntent.setType(slide.getContentType());
+      }
+    }
     startActivity(composeIntent);
   }
 
@@ -347,7 +383,8 @@ public class ConversationFragment extends Fragment
 
   private class ConversationFragmentItemClickListener implements ItemClickListener {
 
-    @Override public void onItemClick(ConversationItem item) {
+    @Override
+    public void onItemClick(ConversationItem item) {
       if (actionMode != null) {
         MessageRecord messageRecord = item.getMessageRecord();
         ((ConversationAdapter) list.getAdapter()).toggleSelection(messageRecord);
@@ -357,7 +394,8 @@ public class ConversationFragment extends Fragment
       }
     }
 
-    @Override public void onItemLongClick(ConversationItem item) {
+    @Override
+    public void onItemLongClick(ConversationItem item) {
       if (actionMode == null) {
         ((ConversationAdapter) list.getAdapter()).toggleSelection(item.getMessageRecord());
         list.getAdapter().notifyDataSetChanged();

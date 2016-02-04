@@ -28,6 +28,7 @@ import android.text.style.StyleSpan;
 import org.thoughtcrime.securesms.R;
 import org.thoughtcrime.securesms.database.MmsSmsColumns;
 import org.thoughtcrime.securesms.database.SmsDatabase;
+import org.thoughtcrime.securesms.database.ThreadDatabase;
 import org.thoughtcrime.securesms.recipients.Recipients;
 import org.thoughtcrime.securesms.util.GroupUtil;
 
@@ -44,17 +45,20 @@ public class ThreadRecord extends DisplayRecord {
   private           final long    count;
   private           final boolean read;
   private           final int     distributionType;
+  private           final boolean archived;
 
   public ThreadRecord(@NonNull Context context, @NonNull Body body, @Nullable Uri snippetUri,
                       @NonNull Recipients recipients, long date, long count, boolean read,
-                      long threadId, long snippetType, int distributionType)
+                      long threadId, int receiptCount, int status, long snippetType,
+                      int distributionType, boolean archived)
   {
-    super(context, body, recipients, date, date, threadId, snippetType);
+    super(context, body, recipients, date, date, threadId, status, receiptCount, snippetType);
     this.context          = context.getApplicationContext();
     this.snippetUri       = snippetUri;
     this.count            = count;
     this.read             = read;
     this.distributionType = distributionType;
+    this.archived         = archived;
   }
 
   public @Nullable Uri getSnippetUri() {
@@ -90,6 +94,8 @@ public class ThreadRecord extends DisplayRecord {
       return emphasisAdded(context.getString(org.thoughtcrime.securesms.R.string.ThreadRecord_called_you));
     } else if (SmsDatabase.Types.isMissedCall(type)) {
       return emphasisAdded(context.getString(org.thoughtcrime.securesms.R.string.ThreadRecord_missed_call));
+    } else if (SmsDatabase.Types.isJoinedType(type)) {
+      return emphasisAdded(context.getString(R.string.ThreadRecord_s_is_on_signal_say_hey, getRecipients().getPrimaryRecipient().toShortString()));
     } else {
       if (TextUtils.isEmpty(getBody().getBody())) {
         return new SpannableString(emphasisAdded(context.getString(R.string.ThreadRecord_media_message)));
@@ -120,6 +126,10 @@ public class ThreadRecord extends DisplayRecord {
 
   public long getDate() {
     return getDateReceived();
+  }
+
+  public boolean isArchived() {
+    return archived;
   }
 
   public int getDistributionType() {

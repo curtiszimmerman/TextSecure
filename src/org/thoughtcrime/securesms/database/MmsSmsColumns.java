@@ -1,5 +1,6 @@
 package org.thoughtcrime.securesms.database;
 
+@SuppressWarnings("UnnecessaryInterfaceModifier")
 public interface MmsSmsColumns {
 
   public static final String ID                       = "_id";
@@ -12,6 +13,7 @@ public interface MmsSmsColumns {
   public static final String ADDRESS_DEVICE_ID        = "address_device_id";
   public static final String RECEIPT_COUNT            = "delivery_receipt_count";
   public static final String MISMATCHED_IDENTITIES    = "mismatched_identities";
+  public static final String UNIQUE_ROW_ID            = "unique_row_id";
 
   public static class Types {
     protected static final long TOTAL_MASK = 0xFFFFFFFF;
@@ -22,6 +24,7 @@ public interface MmsSmsColumns {
     protected static final long INCOMING_CALL_TYPE                 = 1;
     protected static final long OUTGOING_CALL_TYPE                 = 2;
     protected static final long MISSED_CALL_TYPE                   = 3;
+    protected static final long JOINED_TYPE                        = 4;
 
     protected static final long BASE_INBOX_TYPE                    = 20;
     protected static final long BASE_OUTBOX_TYPE                   = 21;
@@ -112,6 +115,10 @@ public interface MmsSmsColumns {
 
     public static boolean isInboxType(long type) {
       return (type & BASE_TYPE_MASK) == BASE_INBOX_TYPE;
+    }
+
+    public static boolean isJoinedType(long type) {
+      return (type & BASE_TYPE_MASK) == JOINED_TYPE;
     }
 
     public static boolean isSecureType(long type) {

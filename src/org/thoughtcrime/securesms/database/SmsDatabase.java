@@ -41,6 +41,7 @@ import org.thoughtcrime.securesms.sms.IncomingGroupMessage;
 import org.thoughtcrime.securesms.sms.IncomingTextMessage;
 import org.thoughtcrime.securesms.sms.OutgoingTextMessage;
 import org.thoughtcrime.securesms.util.JsonUtils;
+import org.thoughtcrime.securesms.util.LRUCache;
 import org.whispersystems.jobqueue.JobManager;
 import org.whispersystems.textsecure.api.util.InvalidNumberException;
 
@@ -97,6 +98,7 @@ public class SmsDatabase extends MessagingDatabase {
       MISMATCHED_IDENTITIES
   };
 
+  private static final EarlyReceiptCache earlyReceiptCache = new EarlyReceiptCache();
   private final JobManager jobManager;
 
   public SmsDatabase(Context context, SQLiteOpenHelper databaseHelper) {
@@ -118,9 +120,8 @@ public class SmsDatabase extends MessagingDatabase {
 
     long threadId = getThreadIdForMessage(id);
 
-    DatabaseFactory.getThreadDatabase(context).update(threadId);
+    DatabaseFactory.getThreadDatabase(context).update(threadId, false);
     notifyConversationListeners(threadId);
-    notifyConversationListListeners();
   }
 
   public long getThreadIdForMessage(long id) {
@@ -242,7 +243,10 @@ public class SmsDatabase extends MessagingDatabase {
 
     SQLiteDatabase db = databaseHelper.getWritableDatabase();
     db.update(TABLE_NAME, contentValues, ID_WHERE, new String[] {id+""});
-    notifyConversationListeners(getThreadIdForMessage(id));
+
+    long threadId = getThreadIdForMessage(id);
+    DatabaseFactory.getThreadDatabase(context).update(threadId, false);
+    notifyConversationListeners(threadId);
   }
 
   public void markAsSentFailed(long id) {
@@ -250,8 +254,9 @@ public class SmsDatabase extends MessagingDatabase {
   }
 
   public void incrementDeliveryReceiptCount(String address, long timestamp) {
-    SQLiteDatabase database = databaseHelper.getWritableDatabase();
-    Cursor         cursor   = null;
+    SQLiteDatabase database     = databaseHelper.getWritableDatabase();
+    Cursor         cursor       = null;
+    boolean        foundMessage = false;
 
     try {
       cursor = database.query(TABLE_NAME, new String[] {ID, THREAD_ID, ADDRESS, TYPE},
@@ -265,18 +270,31 @@ public class SmsDatabase extends MessagingDatabase {
             String ourAddress   = canonicalizeNumber(context, cursor.getString(cursor.getColumnIndexOrThrow(ADDRESS)));
 
             if (ourAddress.equals(theirAddress)) {
+              long threadId = cursor.getLong(cursor.getColumnIndexOrThrow(THREAD_ID));
+
               database.execSQL("UPDATE " + TABLE_NAME +
                                " SET " + RECEIPT_COUNT + " = " + RECEIPT_COUNT + " + 1 WHERE " +
                                ID + " = ?",
                                new String[] {String.valueOf(cursor.getLong(cursor.getColumnIndexOrThrow(ID)))});
 
-              notifyConversationListeners(cursor.getLong(cursor.getColumnIndexOrThrow(THREAD_ID)));
+              DatabaseFactory.getThreadDatabase(context).update(threadId, false);
+              notifyConversationListeners(threadId);
+              foundMessage = true;
             }
           } catch (InvalidNumberException e) {
-            Log.w("SmsDatabase", e);
+            Log.w(TAG, e);
           }
         }
       }
+
+      if (!foundMessage) {
+        try {
+          earlyReceiptCache.increment(timestamp, canonicalizeNumber(context, address));
+        } catch (InvalidNumberException e) {
+          Log.w(TAG, e);
+        }
+      }
+
     } finally {
       if (cursor != null)
         cursor.close();
@@ -310,7 +328,7 @@ public class SmsDatabase extends MessagingDatabase {
 
     long threadId = getThreadIdForMessage(messageId);
 
-    DatabaseFactory.getThreadDatabase(context).update(threadId);
+    DatabaseFactory.getThreadDatabase(context).update(threadId, true);
     notifyConversationListeners(threadId);
     notifyConversationListListeners();
 
@@ -335,7 +353,7 @@ public class SmsDatabase extends MessagingDatabase {
     SQLiteDatabase db           = databaseHelper.getWritableDatabase();
     long           newMessageId = db.insert(TABLE_NAME, null, contentValues);
 
-    DatabaseFactory.getThreadDatabase(context).update(record.getThreadId());
+    DatabaseFactory.getThreadDatabase(context).update(record.getThreadId(), true);
     notifyConversationListeners(record.getThreadId());
 
     jobManager.add(new TrimThreadJob(context, record.getThreadId()));
@@ -372,7 +390,7 @@ public class SmsDatabase extends MessagingDatabase {
     SQLiteDatabase db = databaseHelper.getWritableDatabase();
     long messageId    = db.insert(TABLE_NAME, null, values);
 
-    DatabaseFactory.getThreadDatabase(context).update(threadId);
+    DatabaseFactory.getThreadDatabase(context).update(threadId, true);
     notifyConversationListeners(threadId);
     jobManager.add(new TrimThreadJob(context, threadId));
 
@@ -384,7 +402,9 @@ public class SmsDatabase extends MessagingDatabase {
   }
 
   protected Pair<Long, Long> insertMessageInbox(IncomingTextMessage message, long type) {
-    if (message.isPreKeyBundle()) {
+    if (message.isJoined()) {
+      type = (type & (Types.TOTAL_MASK - Types.BASE_TYPE_MASK)) | Types.JOINED_TYPE;
+    } else if (message.isPreKeyBundle()) {
       type |= Types.KEY_EXCHANGE_BIT | Types.KEY_EXCHANGE_BUNDLE_BIT;
     } else if (message.isSecureMessage()) {
       type |= Types.SECURE_MESSAGE_BIT;
@@ -448,7 +468,7 @@ public class SmsDatabase extends MessagingDatabase {
       DatabaseFactory.getThreadDatabase(context).setUnread(threadId);
     }
 
-    DatabaseFactory.getThreadDatabase(context).update(threadId);
+    DatabaseFactory.getThreadDatabase(context).update(threadId, true);
     notifyConversationListeners(threadId);
     jobManager.add(new TrimThreadJob(context, threadId));
 
@@ -467,8 +487,10 @@ public class SmsDatabase extends MessagingDatabase {
     else if (message.isEndSession())    type |= Types.END_SESSION_BIT;
     if      (forceSms)                  type |= Types.MESSAGE_FORCE_SMS_BIT;
 
+    String address = message.getRecipients().getPrimaryRecipient().getNumber();
+
     ContentValues contentValues = new ContentValues(6);
-    contentValues.put(ADDRESS, PhoneNumberUtils.formatNumber(message.getRecipients().getPrimaryRecipient().getNumber()));
+    contentValues.put(ADDRESS, PhoneNumberUtils.formatNumber(address));
     contentValues.put(THREAD_ID, threadId);
     contentValues.put(BODY, message.getMessageBody());
     contentValues.put(DATE_RECEIVED, System.currentTimeMillis());
@@ -476,10 +498,16 @@ public class SmsDatabase extends MessagingDatabase {
     contentValues.put(READ, 1);
     contentValues.put(TYPE, type);
 
+    try {
+      contentValues.put(RECEIPT_COUNT, earlyReceiptCache.remove(date, canonicalizeNumber(context, address)));
+    } catch (InvalidNumberException e) {
+      Log.w(TAG, e);
+    }
+
     SQLiteDatabase db        = databaseHelper.getWritableDatabase();
     long           messageId = db.insert(TABLE_NAME, ADDRESS, contentValues);
 
-    DatabaseFactory.getThreadDatabase(context).update(threadId);
+    DatabaseFactory.getThreadDatabase(context).update(threadId, true);
     notifyConversationListeners(threadId);
     jobManager.add(new TrimThreadJob(context, threadId));
 
@@ -524,7 +552,7 @@ public class SmsDatabase extends MessagingDatabase {
     SQLiteDatabase db = databaseHelper.getWritableDatabase();
     long threadId     = getThreadIdForMessage(messageId);
     db.delete(TABLE_NAME, ID_WHERE, new String[] {messageId+""});
-    boolean threadDeleted = DatabaseFactory.getThreadDatabase(context).update(threadId);
+    boolean threadDeleted = DatabaseFactory.getThreadDatabase(context).update(threadId, false);
     notifyConversationListeners(threadId);
     return threadDeleted;
   }

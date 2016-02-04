@@ -25,6 +25,7 @@ import org.whispersystems.textsecure.api.push.TextSecureAddress;
 import org.whispersystems.textsecure.api.push.exceptions.UnregisteredUserException;
 import org.whispersystems.textsecure.api.util.InvalidNumberException;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.List;
 
@@ -89,6 +90,8 @@ public class PushMediaSendJob extends PushSendJob implements InjectableType {
   @Override
   public boolean onShouldRetryThrowable(Exception exception) {
     if (exception instanceof RequirementNotMetException) return true;
+    if (exception instanceof RetryLaterException)        return true;
+
     return false;
   }
 
@@ -102,6 +105,13 @@ public class PushMediaSendJob extends PushSendJob implements InjectableType {
       throws RetryLaterException, InsecureFallbackApprovalException, UntrustedIdentityException,
              UndeliverableMessageException
   {
+    if (message.getRecipients() == null                       ||
+        message.getRecipients().getPrimaryRecipient() == null ||
+        message.getRecipients().getPrimaryRecipient().getNumber() == null)
+    {
+      throw new UndeliverableMessageException("No destination address.");
+    }
+
     TextSecureMessageSender messageSender = messageSenderFactory.create();
 
     try {
@@ -118,6 +128,9 @@ public class PushMediaSendJob extends PushSendJob implements InjectableType {
     } catch (InvalidNumberException | UnregisteredUserException e) {
       Log.w(TAG, e);
       throw new InsecureFallbackApprovalException(e);
+    } catch (FileNotFoundException e) {
+      Log.w(TAG, e);
+      throw new UndeliverableMessageException(e);
     } catch (IOException e) {
       Log.w(TAG, e);
       throw new RetryLaterException(e);

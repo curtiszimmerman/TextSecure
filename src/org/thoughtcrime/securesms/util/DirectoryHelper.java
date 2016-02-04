@@ -7,16 +7,23 @@ import android.content.Context;
 import android.content.OperationApplicationException;
 import android.os.RemoteException;
 import android.provider.ContactsContract;
+import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
 import android.util.Log;
+import android.util.Pair;
 
 import org.thoughtcrime.securesms.ApplicationContext;
 import org.thoughtcrime.securesms.R;
+import org.thoughtcrime.securesms.crypto.MasterSecret;
+import org.thoughtcrime.securesms.crypto.SessionUtil;
 import org.thoughtcrime.securesms.database.DatabaseFactory;
 import org.thoughtcrime.securesms.database.NotInDirectoryException;
 import org.thoughtcrime.securesms.database.TextSecureDirectory;
-import org.thoughtcrime.securesms.jobs.DirectoryRefreshJob;
+import org.thoughtcrime.securesms.jobs.MultiDeviceContactUpdateJob;
+import org.thoughtcrime.securesms.notifications.MessageNotifier;
 import org.thoughtcrime.securesms.push.TextSecureCommunicationFactory;
 import org.thoughtcrime.securesms.recipients.Recipients;
+import org.thoughtcrime.securesms.sms.IncomingJoinedMessage;
 import org.thoughtcrime.securesms.util.DirectoryHelper.UserCapabilities.Capability;
 import org.whispersystems.libaxolotl.util.guava.Optional;
 import org.whispersystems.textsecure.api.TextSecureAccountManager;
@@ -24,6 +31,7 @@ import org.whispersystems.textsecure.api.push.ContactTokenDetails;
 import org.whispersystems.textsecure.api.util.InvalidNumberException;
 
 import java.io.IOException;
+import java.util.Calendar;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
@@ -58,21 +66,28 @@ public class DirectoryHelper {
 
   private static final String TAG = DirectoryHelper.class.getSimpleName();
 
-  public static void refreshDirectory(final Context context) throws IOException {
-    refreshDirectory(context, TextSecureCommunicationFactory.createManager(context));
-  }
-
-  public static void refreshDirectory(final Context context, final TextSecureAccountManager accountManager)
+  public static void refreshDirectory(@NonNull Context context, @Nullable MasterSecret masterSecret)
       throws IOException
   {
-    refreshDirectory(context, accountManager, TextSecurePreferences.getLocalNumber(context));
+    List<String> newUsers = refreshDirectory(context,
+                                             TextSecureCommunicationFactory.createManager(context),
+                                             TextSecurePreferences.getLocalNumber(context));
+
+    if (!newUsers.isEmpty() && TextSecurePreferences.isMultiDevice(context)) {
+      ApplicationContext.getInstance(context)
+                        .getJobManager()
+                        .add(new MultiDeviceContactUpdateJob(context));
+    }
+
+    notifyNewUsers(context, masterSecret, newUsers);
   }
 
-  public static void refreshDirectory(final Context context, final TextSecureAccountManager accountManager, final String localNumber)
+  public static @NonNull List<String> refreshDirectory(@NonNull Context context,
+                                                       @NonNull TextSecureAccountManager accountManager,
+                                                       @NonNull String localNumber)
       throws IOException
   {
     TextSecureDirectory       directory              = TextSecureDirectory.getInstance(context);
-    Optional<Account>         account                = getOrCreateAccount(context);
     Set<String>               eligibleContactNumbers = directory.getPushEligibleContactNumbers(localNumber);
     List<ContactTokenDetails> activeTokens           = accountManager.getContacts(eligibleContactNumbers);
 
@@ -83,36 +98,35 @@ public class DirectoryHelper {
       }
 
       directory.setNumbers(activeTokens, eligibleContactNumbers);
-
-      if (account.isPresent()) {
-        List<String> e164numbers = new LinkedList<>();
-
-        for (ContactTokenDetails contactTokenDetails : activeTokens) {
-          e164numbers.add(contactTokenDetails.getNumber());
-        }
-
-        try {
-          DatabaseFactory.getContactsDatabase(context).setRegisteredUsers(account.get(), e164numbers);
-        } catch (RemoteException | OperationApplicationException e) {
-          Log.w(TAG, e);
-        }
-      }
+      return updateContactsDatabase(context, localNumber, activeTokens, true);
     }
+
+    return new LinkedList<>();
   }
 
-  public static UserCapabilities refreshDirectoryFor(Context context, Recipients recipients)
+  public static UserCapabilities refreshDirectoryFor(@NonNull  Context context,
+                                                     @Nullable MasterSecret masterSecret,
+                                                     @NonNull  Recipients recipients,
+                                                     @NonNull  String localNumber)
       throws IOException
   {
     try {
-      TextSecureDirectory      directory      = TextSecureDirectory.getInstance(context);
-      TextSecureAccountManager accountManager = TextSecureCommunicationFactory.createManager(context);
-      String                   number         = Util.canonicalizeNumber(context, recipients.getPrimaryRecipient().getNumber());
-
-      Optional<ContactTokenDetails> details = accountManager.getContact(number);
+      TextSecureDirectory           directory      = TextSecureDirectory.getInstance(context);
+      TextSecureAccountManager      accountManager = TextSecureCommunicationFactory.createManager(context);
+      String                        number         = Util.canonicalizeNumber(context, recipients.getPrimaryRecipient().getNumber());
+      Optional<ContactTokenDetails> details        = accountManager.getContact(number);
 
       if (details.isPresent()) {
         directory.setNumber(details.get(), true);
-        ApplicationContext.getInstance(context).getJobManager().add(new DirectoryRefreshJob(context));
+
+        List<String> newUsers = updateContactsDatabase(context, localNumber, details.get());
+
+        if (!newUsers.isEmpty() && TextSecurePreferences.isMultiDevice(context)) {
+          ApplicationContext.getInstance(context).getJobManager().add(new MultiDeviceContactUpdateJob(context));
+        }
+
+        notifyNewUsers(context, masterSecret, newUsers);
+
         return new UserCapabilities(Capability.SUPPORTED, details.get().isVoice() ? Capability.SUPPORTED : Capability.UNSUPPORTED);
       } else {
         ContactTokenDetails absent = new ContactTokenDetails();
@@ -126,7 +140,9 @@ public class DirectoryHelper {
     }
   }
 
-  public static UserCapabilities getUserCapabilities(Context context, Recipients recipients) {
+  public static @NonNull UserCapabilities getUserCapabilities(@NonNull Context context,
+                                                              @Nullable Recipients recipients)
+  {
     try {
       if (recipients == null) {
         return UserCapabilities.UNSUPPORTED;
@@ -165,12 +181,69 @@ public class DirectoryHelper {
     }
   }
 
+  private static @NonNull List<String> updateContactsDatabase(@NonNull Context context,
+                                                              @NonNull String localNumber,
+                                                              @NonNull final ContactTokenDetails activeToken)
+  {
+    return updateContactsDatabase(context, localNumber,
+                                  new LinkedList<ContactTokenDetails>() {{add(activeToken);}},
+                                  false);
+  }
+
+  private static @NonNull List<String> updateContactsDatabase(@NonNull Context context,
+                                                              @NonNull String localNumber,
+                                                              @NonNull List<ContactTokenDetails> activeTokens,
+                                                              boolean removeMissing)
+  {
+    Optional<Account> account = getOrCreateAccount(context);
+
+    if (account.isPresent()) {
+      try {
+        return  DatabaseFactory.getContactsDatabase(context)
+                               .setRegisteredUsers(account.get(), localNumber, activeTokens, removeMissing);
+      } catch (RemoteException | OperationApplicationException e) {
+        Log.w(TAG, e);
+      }
+    }
+
+    return new LinkedList<>();
+  }
+
+  private static void notifyNewUsers(@NonNull  Context context,
+                                     @Nullable MasterSecret masterSecret,
+                                     @NonNull  List<String> newUsers)
+  {
+    if (!TextSecurePreferences.isNewContactsNotificationEnabled(context)) return;
+
+    for (String newUser : newUsers) {
+      if (!SessionUtil.hasSession(context, masterSecret, newUser)) {
+        IncomingJoinedMessage message        = new IncomingJoinedMessage(newUser);
+        Pair<Long, Long>      smsAndThreadId = DatabaseFactory.getSmsDatabase(context).insertMessageInbox(message);
+
+        int hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY);
+        if (hour >= 9 && hour < 23) {
+          MessageNotifier.updateNotification(context, masterSecret, false, smsAndThreadId.second, true);
+        } else {
+          MessageNotifier.updateNotification(context, masterSecret, false, smsAndThreadId.second, false);
+        }
+      }
+    }
+  }
+
   private static Optional<Account> getOrCreateAccount(Context context) {
     AccountManager accountManager = AccountManager.get(context);
     Account[]      accounts       = accountManager.getAccountsByType("org.thoughtcrime.securesms");
 
-    if (accounts.length == 0) return createAccount(context);
-    else                      return Optional.of(accounts[0]);
+    Optional<Account> account;
+
+    if (accounts.length == 0) account = createAccount(context);
+    else                      account = Optional.of(accounts[0]);
+
+    if (account.isPresent() && !ContentResolver.getSyncAutomatically(account.get(), ContactsContract.AUTHORITY)) {
+      ContentResolver.setSyncAutomatically(account.get(), ContactsContract.AUTHORITY, true);
+    }
+
+    return account;
   }
 
   private static Optional<Account> createAccount(Context context) {

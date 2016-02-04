@@ -11,6 +11,7 @@ import android.graphics.YuvImage;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
 import android.util.Log;
 import android.util.Pair;
 
@@ -29,10 +30,10 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class BitmapUtil {
+
   private static final String TAG = BitmapUtil.class.getSimpleName();
 
   private static final int MAX_COMPRESSION_QUALITY  = 80;
@@ -40,7 +41,7 @@ public class BitmapUtil {
   private static final int MAX_COMPRESSION_ATTEMPTS = 4;
 
   public static <T> byte[] createScaledBytes(Context context, T model, MediaConstraints constraints)
-      throws ExecutionException, IOException
+      throws BitmapDecodingException
   {
     int    quality  = MAX_COMPRESSION_QUALITY;
     int    attempts = 0;
@@ -61,7 +62,7 @@ public class BitmapUtil {
       }
       while (bytes.length > constraints.getImageMaxSize() && attempts++ < MAX_COMPRESSION_ATTEMPTS);
       if (bytes.length > constraints.getImageMaxSize()) {
-        throw new IOException("Unable to scale image below: " + bytes.length);
+        throw new BitmapDecodingException("Unable to scale image below: " + bytes.length);
       }
       Log.w(TAG, "createScaledBytes(" + model.toString() + ") -> quality " + Math.min(quality, MAX_COMPRESSION_QUALITY) + ", " + attempts + " attempt(s)");
       return bytes;
@@ -71,7 +72,7 @@ public class BitmapUtil {
   }
 
   public static <T> Bitmap createScaledBitmap(Context context, T model, int maxWidth, int maxHeight)
-      throws ExecutionException
+      throws BitmapDecodingException
   {
     final Pair<Integer, Integer> dimensions = getDimensions(getInputStreamForModel(context, model));
     final Pair<Integer, Integer> clamped    = clampDimensions(dimensions.first, dimensions.second,
@@ -80,19 +81,19 @@ public class BitmapUtil {
   }
 
   private static <T> InputStream getInputStreamForModel(Context context, T model)
-      throws ExecutionException
+      throws BitmapDecodingException
   {
     try {
       return Glide.buildStreamModelLoader(model, context)
                   .getResourceFetcher(model, -1, -1)
                   .loadData(Priority.NORMAL);
     } catch (Exception e) {
-      throw new ExecutionException(e);
+      throw new BitmapDecodingException(e);
     }
   }
 
   private static <T> Bitmap createScaledBitmapInto(Context context, T model, int width, int height)
-      throws ExecutionException
+      throws BitmapDecodingException
   {
     final Bitmap rough = Downsampler.AT_LEAST.decode(getInputStreamForModel(context, model),
                                                      Glide.get(context).getBitmapPool(),
@@ -103,20 +104,22 @@ public class BitmapUtil {
     final Resource<Bitmap> result   = new FitCenter(context).transform(resource, width, height);
 
     if (result == null) {
-      throw new ExecutionException(new BitmapDecodingException("unable to transform Bitmap"));
+      throw new BitmapDecodingException("unable to transform Bitmap");
     }
     return result.get();
   }
 
   public static <T> Bitmap createScaledBitmap(Context context, T model, float scale)
-      throws ExecutionException
+      throws BitmapDecodingException
   {
     Pair<Integer, Integer> dimens = getDimensions(getInputStreamForModel(context, model));
     return createScaledBitmapInto(context, model,
                                   (int)(dimens.first * scale), (int)(dimens.second * scale));
   }
 
-  private static BitmapFactory.Options getImageDimensions(InputStream inputStream) {
+  private static BitmapFactory.Options getImageDimensions(InputStream inputStream)
+      throws BitmapDecodingException
+  {
     BitmapFactory.Options options = new BitmapFactory.Options();
     options.inJustDecodeBounds    = true;
     BufferedInputStream fis       = new BufferedInputStream(inputStream);
@@ -126,10 +129,15 @@ public class BitmapUtil {
     } catch (IOException ioe) {
       Log.w(TAG, "failed to close the InputStream after reading image dimensions");
     }
+
+    if (options.outWidth == -1 || options.outHeight == -1) {
+      throw new BitmapDecodingException("Failed to decode image dimensions: " + options.outWidth + ", " + options.outHeight);
+    }
+
     return options;
   }
 
-  public static Pair<Integer, Integer> getDimensions(InputStream inputStream) {
+  public static Pair<Integer, Integer> getDimensions(InputStream inputStream) throws BitmapDecodingException {
     BitmapFactory.Options options = getImageDimensions(inputStream);
     return new Pair<>(options.outWidth, options.outHeight);
   }
@@ -140,20 +148,27 @@ public class BitmapUtil {
     return new ByteArrayInputStream(thumbnailBytes.toByteArray());
   }
 
-  public static byte[] toByteArray(Bitmap bitmap) {
+  public static @Nullable byte[] toByteArray(@Nullable Bitmap bitmap) {
+    if (bitmap == null) return null;
     ByteArrayOutputStream stream = new ByteArrayOutputStream();
     bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream);
     return stream.toByteArray();
+  }
+
+  public static @Nullable Bitmap fromByteArray(@Nullable byte[] bytes) {
+    if (bytes == null) return null;
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
   }
 
   public static byte[] createFromNV21(@NonNull final byte[] data,
                                       final int width,
                                       final int height,
                                       int rotation,
-                                      final Rect croppingRect)
+                                      final Rect croppingRect,
+                                      final boolean flipHorizontal)
       throws IOException
   {
-    byte[] rotated = rotateNV21(data, width, height, rotation);
+    byte[] rotated = rotateNV21(data, width, height, rotation, flipHorizontal);
     final int rotatedWidth  = rotation % 180 > 0 ? height : width;
     final int rotatedHeight = rotation % 180 > 0 ? width  : height;
     YuvImage previewImage = new YuvImage(rotated, ImageFormat.NV21,
@@ -166,20 +181,33 @@ public class BitmapUtil {
     return bytes;
   }
 
+  /*
+   * NV21 a.k.a. YUV420sp
+   * YUV 4:2:0 planar image, with 8 bit Y samples, followed by interleaved V/U plane with 8bit 2x2
+   * subsampled chroma samples.
+   *
+   * http://www.fourcc.org/yuv.php#NV21
+   */
   public static byte[] rotateNV21(@NonNull final byte[] yuv,
                                   final int width,
                                   final int height,
-                                  final int rotation)
+                                  final int rotation,
+                                  final boolean flipHorizontal)
+      throws IOException
   {
     if (rotation == 0) return yuv;
     if (rotation % 90 != 0 || rotation < 0 || rotation > 270) {
       throw new IllegalArgumentException("0 <= rotation < 360, rotation % 90 == 0");
+    } else if ((width * height * 3) / 2 != yuv.length) {
+      throw new IOException("provided width and height don't jive with the data length (" +
+                            yuv.length + "). Width: " + width + " height: " + height +
+                            " = data length: " + (width * height * 3) / 2);
     }
 
     final byte[]  output    = new byte[yuv.length];
     final int     frameSize = width * height;
     final boolean swap      = rotation % 180 != 0;
-    final boolean xflip     = rotation % 270 != 0;
+    final boolean xflip     = flipHorizontal ? rotation % 270 == 0 : rotation % 270 != 0;
     final boolean yflip     = rotation >= 180;
 
     for (int j = 0; j < height; j++) {

@@ -24,6 +24,7 @@ import android.net.Uri;
 import android.util.Log;
 
 import org.thoughtcrime.securesms.R;
+import org.thoughtcrime.securesms.util.ServiceUtil;
 
 import java.io.IOException;
 
@@ -114,8 +115,11 @@ public class OutgoingRinger implements MediaPlayer.OnCompletionListener, MediaPl
     if( mediaPlayer == null ) return;
     try {
       mediaPlayer.stop();
+      mediaPlayer.release();
+      mediaPlayer = null;
     } catch( IllegalStateException e ) {
     }
+    currentSoundID = -1;
   }
 
   private void stop( int soundID ) {
@@ -132,12 +136,12 @@ public class OutgoingRinger implements MediaPlayer.OnCompletionListener, MediaPl
   public void onPrepared(MediaPlayer mp) {
     mediaPlayer.setLooping(loopEnabled);
 
-    AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+    AudioManager am = ServiceUtil.getAudioManager(context);
 
     if (am.isBluetoothScoAvailableOffCall()) {
+      Log.d(TAG, "bluetooth sco is available");
       try {
         am.startBluetoothSco();
-        am.setBluetoothScoOn(true);
       } catch (NullPointerException e) {
         // Lollipop bug (https://stackoverflow.com/questions/26642218/audiomanager-startbluetoothsco-crashes-on-android-lollipop)
       }

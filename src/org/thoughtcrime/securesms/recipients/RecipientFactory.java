@@ -20,11 +20,11 @@ import android.content.Context;
 import android.support.annotation.NonNull;
 import android.text.TextUtils;
 
-import org.thoughtcrime.securesms.contacts.avatars.ContactPhotoFactory;
 import org.thoughtcrime.securesms.database.CanonicalAddressDatabase;
 import org.thoughtcrime.securesms.util.Util;
 import org.whispersystems.libaxolotl.util.guava.Optional;
 
+import java.util.Collection;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.StringTokenizer;
@@ -40,7 +40,7 @@ public class RecipientFactory {
     return getRecipientsForIds(context, Util.split(recipientIds, " "), asynchronous);
   }
 
-  public static Recipients getRecipientsFor(Context context, List<Recipient> recipients, boolean asynchronous) {
+  public static @NonNull Recipients getRecipientsFor(Context context, Collection<Recipient> recipients, boolean asynchronous) {
     long[] ids = new long[recipients.size()];
     int    i   = 0;
 
@@ -58,11 +58,11 @@ public class RecipientFactory {
     return provider.getRecipients(context, ids, asynchronous);
   }
 
-  public static Recipient getRecipientForId(Context context, long recipientId, boolean asynchronous) {
+  public @NonNull static Recipient getRecipientForId(Context context, long recipientId, boolean asynchronous) {
     return provider.getRecipient(context, recipientId, asynchronous);
   }
 
-  public static Recipients getRecipientsForIds(Context context, long[] recipientIds, boolean asynchronous) {
+  public @NonNull static Recipients getRecipientsForIds(Context context, long[] recipientIds, boolean asynchronous) {
     return provider.getRecipients(context, recipientIds, asynchronous);
   }
 

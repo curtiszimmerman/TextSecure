@@ -1,11 +1,10 @@
 package org.thoughtcrime.securesms;
 
-import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
-import android.telephony.TelephonyManager;
+import android.support.v7.app.AlertDialog;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
@@ -18,7 +17,6 @@ import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.afollestad.materialdialogs.AlertDialogWrapper;
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.GooglePlayServicesUtil;
 import com.google.i18n.phonenumbers.AsYouTypeFormatter;
@@ -133,14 +131,14 @@ public class RegistrationActivity extends BaseActionBarActivity {
         Phonenumber.PhoneNumber localNumberObject = numberUtil.parse(localNumber, null);
 
         if (localNumberObject != null) {
-          this.countryCode.setText(localNumberObject.getCountryCode()+"");
-          this.number.setText(localNumberObject.getNationalNumber()+"");
+          this.countryCode.setText(String.valueOf(localNumberObject.getCountryCode()));
+          this.number.setText(String.valueOf(localNumberObject.getNationalNumber()));
         }
       } else {
-        String simCountryIso = ((TelephonyManager)getSystemService(Context.TELEPHONY_SERVICE)).getSimCountryIso();
+        String simCountryIso = Util.getSimCountryIso(this);
 
         if (!TextUtils.isEmpty(simCountryIso)) {
-          this.countryCode.setText(numberUtil.getCountryCodeForRegion(simCountryIso.toUpperCase())+"");
+          this.countryCode.setText(numberUtil.getCountryCodeForRegion(simCountryIso)+"");
         }
       }
     } catch (NumberParseException npe) {
@@ -207,7 +205,7 @@ public class RegistrationActivity extends BaseActionBarActivity {
         return;
       }
 
-      AlertDialogWrapper.Builder dialog = new AlertDialogWrapper.Builder(self);
+      AlertDialog.Builder dialog = new AlertDialog.Builder(self);
       dialog.setTitle(PhoneNumberFormatter.getInternationalFormatFromE164(e164number));
       dialog.setMessage(R.string.RegistrationActivity_we_will_now_verify_that_the_following_number_is_associated_with_your_device_s);
       dialog.setPositiveButton(getString(R.string.RegistrationActivity_continue),

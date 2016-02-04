@@ -32,6 +32,8 @@ import android.widget.RelativeLayout;
 import android.widget.TextView;
 
 import org.thoughtcrime.securesms.components.AvatarImageView;
+import org.thoughtcrime.securesms.components.DeliveryStatusView;
+import org.thoughtcrime.securesms.components.AlertView;
 import org.thoughtcrime.securesms.components.FromTextView;
 import org.thoughtcrime.securesms.components.ThumbnailView;
 import org.thoughtcrime.securesms.crypto.MasterSecret;
@@ -39,6 +41,7 @@ import org.thoughtcrime.securesms.database.model.ThreadRecord;
 import org.thoughtcrime.securesms.recipients.Recipients;
 import org.thoughtcrime.securesms.util.DateUtils;
 import org.thoughtcrime.securesms.util.ResUtil;
+import org.thoughtcrime.securesms.util.ViewUtil;
 
 import java.util.Locale;
 import java.util.Set;
@@ -53,19 +56,24 @@ import static org.thoughtcrime.securesms.util.SpanUtil.color;
  */
 
 public class ConversationListItem extends RelativeLayout
-                                  implements Recipients.RecipientsModifiedListener, Unbindable
+                                  implements Recipients.RecipientsModifiedListener,
+                                             BindableConversationListItem, Unbindable
 {
   private final static String TAG = ConversationListItem.class.getSimpleName();
 
   private final static Typeface BOLD_TYPEFACE  = Typeface.create("sans-serif", Typeface.BOLD);
   private final static Typeface LIGHT_TYPEFACE = Typeface.create("sans-serif-light", Typeface.NORMAL);
 
-  private Set<Long>       selectedThreads;
-  private Recipients      recipients;
-  private long            threadId;
-  private TextView        subjectView;
-  private FromTextView    fromView;
-  private TextView        dateView;
+  private Set<Long>          selectedThreads;
+  private Recipients         recipients;
+  private long               threadId;
+  private TextView           subjectView;
+  private FromTextView       fromView;
+  private TextView           dateView;
+  private TextView           archivedView;
+  private DeliveryStatusView deliveryStatusIndicator;
+  private AlertView          alertView;
+
   private boolean         read;
   private AvatarImageView contactPhotoImage;
   private ThumbnailView   thumbnailView;
@@ -89,22 +97,22 @@ public class ConversationListItem extends RelativeLayout
   @Override
   protected void onFinishInflate() {
     super.onFinishInflate();
-    this.subjectView       = (TextView)        findViewById(R.id.subject);
-    this.fromView          = (FromTextView)    findViewById(R.id.from);
-    this.dateView          = (TextView)        findViewById(R.id.date);
-    this.contactPhotoImage = (AvatarImageView) findViewById(R.id.contact_photo_image);
-    this.thumbnailView     = (ThumbnailView)   findViewById(R.id.thumbnail);
+    this.subjectView             = (TextView)           findViewById(R.id.subject);
+    this.fromView                = (FromTextView)       findViewById(R.id.from);
+    this.dateView                = (TextView)           findViewById(R.id.date);
+    this.deliveryStatusIndicator = (DeliveryStatusView) findViewById(R.id.delivery_status);
+    this.alertView               = (AlertView)          findViewById(R.id.indicators_parent);
+    this.contactPhotoImage       = (AvatarImageView)    findViewById(R.id.contact_photo_image);
+    this.thumbnailView           = (ThumbnailView)      findViewById(R.id.thumbnail);
+    this.archivedView            = ViewUtil.findById(this, R.id.archived);
+    thumbnailView.setClickable(false);
 
-    this.thumbnailView.setOnClickListener(new View.OnClickListener() {
-      @Override
-      public void onClick(View v) {
-        ConversationListItem.this.performClick();
-      }
-    });
+    ViewUtil.setTextViewGravityStart(this.fromView, getContext());
+    ViewUtil.setTextViewGravityStart(this.subjectView, getContext());
   }
 
-  public void set(@NonNull MasterSecret masterSecret, @NonNull ThreadRecord thread,
-                  @NonNull Locale locale, @NonNull Set<Long> selectedThreads, boolean batchMode)
+  public void bind(@NonNull MasterSecret masterSecret, @NonNull ThreadRecord thread,
+                   @NonNull Locale locale, @NonNull Set<Long> selectedThreads, boolean batchMode)
   {
     this.selectedThreads  = selectedThreads;
     this.recipients       = thread.getRecipients();
@@ -124,6 +132,13 @@ public class ConversationListItem extends RelativeLayout
       dateView.setTypeface(read ? LIGHT_TYPEFACE : BOLD_TYPEFACE);
     }
 
+    if (thread.isArchived()) {
+      this.archivedView.setVisibility(View.VISIBLE);
+    } else {
+      this.archivedView.setVisibility(View.GONE);
+    }
+
+    setStatusIcons(thread);
     setThumbnailSnippet(masterSecret, thread);
     setBatchState(batchMode);
     setBackground(thread);
@@ -148,6 +163,10 @@ public class ConversationListItem extends RelativeLayout
     return threadId;
   }
 
+  public boolean getRead() {
+    return read;
+  }
+
   public int getDistributionType() {
     return distributionType;
   }
@@ -159,13 +178,39 @@ public class ConversationListItem extends RelativeLayout
 
       LayoutParams subjectParams = (RelativeLayout.LayoutParams)this.subjectView.getLayoutParams();
       subjectParams.addRule(RelativeLayout.LEFT_OF, R.id.thumbnail);
+      if (VERSION.SDK_INT >= VERSION_CODES.JELLY_BEAN_MR1) {
+        subjectParams.addRule(RelativeLayout.START_OF, R.id.thumbnail);
+      }
       this.subjectView.setLayoutParams(subjectParams);
+      this.post(new ThumbnailPositioner(thumbnailView, archivedView, deliveryStatusIndicator, dateView));
     } else {
       this.thumbnailView.setVisibility(View.GONE);
 
       LayoutParams subjectParams = (RelativeLayout.LayoutParams)this.subjectView.getLayoutParams();
-      subjectParams.addRule(RelativeLayout.LEFT_OF, 0);
+      subjectParams.addRule(RelativeLayout.LEFT_OF, R.id.delivery_status);
+      if (VERSION.SDK_INT >= VERSION_CODES.JELLY_BEAN_MR1) {
+        subjectParams.addRule(RelativeLayout.START_OF, R.id.delivery_status);
+      }
       this.subjectView.setLayoutParams(subjectParams);
+    }
+  }
+
+  private void setStatusIcons(ThreadRecord thread) {
+    if (!thread.isOutgoing()) {
+      deliveryStatusIndicator.setNone();
+      alertView.setNone();
+    } else if (thread.isFailed()) {
+      deliveryStatusIndicator.setNone();
+      alertView.setFailed();
+    } else if (thread.isPendingInsecureSmsFallback()) {
+      deliveryStatusIndicator.setNone();
+      alertView.setPendingApproval();
+    } else {
+      alertView.setNone();
+
+      if      (thread.isPending())   deliveryStatusIndicator.setPending();
+      else if (thread.isDelivered()) deliveryStatusIndicator.setDelivered();
+      else                           deliveryStatusIndicator.setSent();
     }
   }
 
@@ -193,4 +238,41 @@ public class ConversationListItem extends RelativeLayout
       }
     });
   }
+
+  private static class ThumbnailPositioner implements Runnable {
+
+    private final View thumbnailView;
+    private final View archivedView;
+    private final View deliveryStatusView;
+    private final View dateView;
+
+    public ThumbnailPositioner(View thumbnailView, View archivedView, View deliveryStatusView, View dateView) {
+      this.thumbnailView      = thumbnailView;
+      this.archivedView       = archivedView;
+      this.deliveryStatusView = deliveryStatusView;
+      this.dateView           = dateView;
+    }
+
+    @Override
+    public void run() {
+      LayoutParams thumbnailParams = (RelativeLayout.LayoutParams)thumbnailView.getLayoutParams();
+
+      if (archivedView.getVisibility() == View.VISIBLE &&
+          (archivedView.getWidth() + deliveryStatusView.getWidth()) > dateView.getWidth())
+      {
+        thumbnailParams.addRule(RelativeLayout.LEFT_OF, R.id.delivery_status);
+        if (VERSION.SDK_INT >= VERSION_CODES.JELLY_BEAN_MR1) {
+          thumbnailParams.addRule(RelativeLayout.START_OF, R.id.delivery_status);
+        }
+      } else {
+        thumbnailParams.addRule(RelativeLayout.LEFT_OF, R.id.date);
+        if (VERSION.SDK_INT >= VERSION_CODES.JELLY_BEAN_MR1) {
+          thumbnailParams.addRule(RelativeLayout.START_OF, R.id.date);
+        }
+      }
+
+      thumbnailView.setLayoutParams(thumbnailParams);
+    }
+  }
+
 }

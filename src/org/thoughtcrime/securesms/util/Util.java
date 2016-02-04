@@ -35,7 +35,10 @@ import android.text.Spannable;
 import android.text.SpannableString;
 import android.text.TextUtils;
 import android.text.style.StyleSpan;
+import android.util.Log;
 import android.widget.EditText;
+
+import com.google.i18n.phonenumbers.PhoneNumberUtil;
 
 import org.thoughtcrime.securesms.BuildConfig;
 import org.thoughtcrime.securesms.mms.OutgoingLegacyMmsConnection;
@@ -49,12 +52,12 @@ import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -63,6 +66,8 @@ import ws.com.google.android.mms.pdu.CharacterSets;
 import ws.com.google.android.mms.pdu.EncodedStringValue;
 
 public class Util {
+  private static final String TAG = Util.class.getSimpleName();
+
   public static Handler handler = new Handler(Looper.getMainLooper());
 
   public static String join(String[] list, String delimiter) {
@@ -157,6 +162,14 @@ public class Util {
     }
   }
 
+  public static void close(OutputStream out) {
+    try {
+      out.close();
+    } catch (IOException e) {
+      Log.w(TAG, e);
+    }
+  }
+
   public static String canonicalizeNumber(Context context, String number)
       throws InvalidNumberException
   {
@@ -205,19 +218,22 @@ public class Util {
     return total;
   }
 
-  public static String getDeviceE164Number(Context context) {
-    String localNumber = ((TelephonyManager)context.getSystemService(Context.TELEPHONY_SERVICE))
-        .getLine1Number();
+  public static @Nullable String getDeviceE164Number(Context context) {
+    final String  localNumber = ((TelephonyManager)context.getSystemService(Context.TELEPHONY_SERVICE)).getLine1Number();
+    final String  countryIso  = getSimCountryIso(context);
+    final Integer countryCode = PhoneNumberUtil.getInstance().getCountryCodeForRegion(countryIso);
 
-    if (!TextUtils.isEmpty(localNumber) && !localNumber.startsWith("+"))
-    {
-      if (localNumber.length() == 10) localNumber = "+1" + localNumber;
-      else                            localNumber = "+"  + localNumber;
+    if (TextUtils.isEmpty(localNumber)) return null;
 
-      return localNumber;
-    }
+    if      (localNumber.startsWith("+"))    return localNumber;
+    else if (!TextUtils.isEmpty(countryIso)) return PhoneNumberFormatter.formatE164(String.valueOf(countryCode), localNumber);
+    else if (localNumber.length() == 10)     return "+1" + localNumber;
+    else                                     return "+" + localNumber;
+  }
 
-    return null;
+  public static @Nullable String getSimCountryIso(Context context) {
+    String simCountryIso = ((TelephonyManager)context.getSystemService(Context.TELEPHONY_SERVICE)).getSimCountryIso();
+    return simCountryIso != null ? simCountryIso.toUpperCase() : null;
   }
 
   public static <T> List<List<T>> partition(List<T> list, int partitionSize) {
@@ -311,8 +327,9 @@ public class Util {
     }
   }
 
-  public static boolean isBuildFresh() {
-    return BuildConfig.BUILD_TIMESTAMP + TimeUnit.DAYS.toMillis(90) > System.currentTimeMillis();
+  public static int getDaysTillBuildExpiry() {
+    int age = (int)TimeUnit.MILLISECONDS.toDays(System.currentTimeMillis() - BuildConfig.BUILD_TIMESTAMP);
+    return 90 - age;
   }
 
   @TargetApi(VERSION_CODES.LOLLIPOP)
@@ -330,9 +347,31 @@ public class Util {
     }
   }
 
-  public static void runOnMain(Runnable runnable) {
+  public static void runOnMain(final @NonNull Runnable runnable) {
     if (isMainThread()) runnable.run();
     else                handler.post(runnable);
+  }
+
+  public static void runOnMainSync(final @NonNull Runnable runnable) {
+    if (isMainThread()) {
+      runnable.run();
+    } else {
+      final CountDownLatch sync = new CountDownLatch(1);
+      runOnMain(new Runnable() {
+        @Override public void run() {
+          try {
+            runnable.run();
+          } finally {
+            sync.countDown();
+          }
+        }
+      });
+      try {
+        sync.await();
+      } catch (InterruptedException ie) {
+        throw new AssertionError(ie);
+      }
+    }
   }
 
   public static boolean equals(@Nullable Object a, @Nullable Object b) {

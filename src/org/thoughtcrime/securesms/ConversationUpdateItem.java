@@ -70,7 +70,8 @@ public class ConversationUpdateItem extends LinearLayout
 
     if      (messageRecord.isGroupAction()) setGroupRecord(messageRecord);
     else if (messageRecord.isCallLog())     setCallRecord(messageRecord);
-    else                                    throw new AssertionError("Neither group no log.");
+    else if (messageRecord.isJoined())      setJoinedRecord(messageRecord);
+    else                                    throw new AssertionError("Neither group nor log nor joined.");
   }
 
   private void setCallRecord(MessageRecord messageRecord) {
@@ -86,16 +87,15 @@ public class ConversationUpdateItem extends LinearLayout
   private void setGroupRecord(MessageRecord messageRecord) {
     icon.setImageResource(R.drawable.ic_group_grey600_24dp);
 
-    if (messageRecord.isGroupQuit() && messageRecord.isOutgoing()) {
-      body.setText(R.string.MessageRecord_left_group);
-    } else if (messageRecord.isGroupQuit()) {
-      body.setText(getContext().getString(R.string.ConversationItem_group_action_left, sender.toShortString()));
-    } else {
-      GroupUtil.GroupDescription description = GroupUtil.getDescription(getContext(), messageRecord.getBody().getBody());
-      description.addListener(this);
-      body.setText(description.toString());
-    }
+    GroupUtil.getDescription(getContext(), messageRecord.getBody().getBody()).addListener(this);
+    body.setText(messageRecord.getDisplayBody());
 
+    date.setVisibility(View.GONE);
+  }
+
+  private void setJoinedRecord(MessageRecord messageRecord) {
+    icon.setImageResource(R.drawable.ic_favorite_grey600_24dp);
+    body.setText(messageRecord.getDisplayBody());
     date.setVisibility(View.GONE);
   }
 

@@ -22,7 +22,7 @@ import com.pnikosis.materialishprogress.ProgressWheel;
 
 import org.thoughtcrime.securesms.R;
 import org.thoughtcrime.securesms.database.AttachmentDatabase;
-import org.thoughtcrime.securesms.jobs.PartProgressEvent;
+import org.thoughtcrime.securesms.events.PartProgressEvent;
 import org.thoughtcrime.securesms.mms.Slide;
 import org.thoughtcrime.securesms.util.Util;
 import org.thoughtcrime.securesms.util.ViewUtil;
@@ -53,7 +53,7 @@ public class TransferControlView extends FrameLayout {
     inflate(context, R.layout.transfer_controls_view, this);
 
     final Drawable background = ContextCompat.getDrawable(context, R.drawable.transfer_controls_background);
-    if (VERSION.SDK_INT >= VERSION_CODES.ICE_CREAM_SANDWICH) {
+    if (VERSION.SDK_INT >= VERSION_CODES.JELLY_BEAN_MR1) {
       background.setColorFilter(0x66ffffff, Mode.MULTIPLY);
     }
     setLongClickable(false);

@@ -97,6 +97,12 @@ public class ThumbnailView extends FrameLayout {
   }
 
   public void setImageResource(@NonNull MasterSecret masterSecret, @NonNull Slide slide, boolean showControls) {
+    if (showControls) {
+      getTransferControls().setSlide(slide);
+      getTransferControls().setDownloadClickListener(new DownloadClickDispatcher());
+    } else if (transferControls.isPresent()) {
+      getTransferControls().setVisibility(View.GONE);
+    }
 
     if (Util.equals(slide, this.slide)) {
       Log.w(TAG, "Not re-loading slide " + slide.asAttachment().getDataUri());
@@ -106,13 +112,6 @@ public class ThumbnailView extends FrameLayout {
     if (!isContextValid()) {
       Log.w(TAG, "Not loading slide, context is invalid");
       return;
-    }
-
-    if (showControls) {
-      getTransferControls().setSlide(slide);
-      getTransferControls().setDownloadClickListener(new DownloadClickDispatcher());
-    } else if (transferControls.isPresent()) {
-      getTransferControls().setVisibility(View.GONE);
     }
 
     Log.w(TAG, "loading part with id " + slide.asAttachment().getDataUri()
@@ -161,9 +160,10 @@ public class ThumbnailView extends FrameLayout {
   }
 
   private GenericRequestBuilder buildThumbnailGlideRequest(@NonNull Slide slide, @NonNull MasterSecret masterSecret) {
+    @SuppressWarnings("ConstantConditions")
     DrawableRequestBuilder<DecryptableUri> builder = Glide.with(getContext()).load(new DecryptableUri(masterSecret, slide.getThumbnailUri()))
-                                                          .crossFade()
-                                                          .transform(new RoundedCorners(getContext(), true, radius, backgroundColorHint));
+                                                                             .crossFade()
+                                                                             .transform(new RoundedCorners(getContext(), true, radius, backgroundColorHint));
 
     if (slide.isInProgress()) return builder;
     else                      return builder.error(R.drawable.ic_missing_thumbnail_picture);

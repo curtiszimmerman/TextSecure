@@ -23,10 +23,13 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
+import android.media.AudioAttributes;
 import android.media.AudioManager;
-import android.media.MediaPlayer;
+import android.media.Ringtone;
+import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.AsyncTask;
+import android.os.Build;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.text.Spannable;
@@ -50,13 +53,10 @@ import org.thoughtcrime.securesms.recipients.Recipient;
 import org.thoughtcrime.securesms.recipients.RecipientFactory;
 import org.thoughtcrime.securesms.recipients.Recipients;
 import org.thoughtcrime.securesms.service.KeyCachingService;
-import org.thoughtcrime.securesms.util.ListenableFutureTask;
 import org.thoughtcrime.securesms.util.SpanUtil;
 import org.thoughtcrime.securesms.util.TextSecurePreferences;
-import org.thoughtcrime.securesms.util.concurrent.ListenableFuture;
 import org.whispersystems.textsecure.api.messages.TextSecureEnvelope;
 
-import java.io.IOException;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.concurrent.TimeUnit;
@@ -120,8 +120,24 @@ public class MessageNotifier {
                                         boolean   includePushDatabase,
                                         long      threadId)
   {
-    Recipients recipients = DatabaseFactory.getThreadDatabase(context)
-                                           .getRecipientsForThreadId(threadId);
+    updateNotification(context, masterSecret, includePushDatabase, threadId, true);
+  }
+
+  public static void updateNotification(@NonNull  Context context,
+                                        @Nullable MasterSecret masterSecret,
+                                        boolean   includePushDatabase,
+                                        long      threadId,
+                                        boolean   signal)
+  {
+    boolean    isVisible  = visibleThread == threadId;
+
+    ThreadDatabase threads    = DatabaseFactory.getThreadDatabase(context);
+    Recipients     recipients = DatabaseFactory.getThreadDatabase(context)
+                                               .getRecipientsForThreadId(threadId);
+
+    if (isVisible) {
+      threads.setRead(threadId);
+    }
 
     if (!TextSecurePreferences.isNotificationsEnabled(context) ||
         (recipients != null && recipients.isMuted()))
@@ -129,12 +145,10 @@ public class MessageNotifier {
       return;
     }
 
-    if (visibleThread == threadId) {
-      ThreadDatabase threads = DatabaseFactory.getThreadDatabase(context);
-      threads.setRead(threadId);
+    if (isVisible) {
       sendInThreadNotification(context, threads.getRecipientsForThreadId(threadId));
     } else {
-      updateNotification(context, masterSecret, true, includePushDatabase, 0);
+      updateNotification(context, masterSecret, signal, includePushDatabase, 0);
     }
   }
 
@@ -197,10 +211,12 @@ public class MessageNotifier {
 
     SingleRecipientNotificationBuilder builder       = new SingleRecipientNotificationBuilder(context, masterSecret, TextSecurePreferences.getNotificationPrivacy(context));
     List<NotificationItem>             notifications = notificationState.getNotifications();
+    Recipients                         recipients    = notifications.get(0).getRecipients();
 
-    builder.setSender(notifications.get(0).getIndividualRecipient());
+    builder.setThread(notifications.get(0).getRecipients());
     builder.setMessageCount(notificationState.getMessageCount());
-    builder.setPrimaryMessageBody(notifications.get(0).getText(), notifications.get(0).getSlideDeck());
+    builder.setPrimaryMessageBody(recipients, notifications.get(0).getIndividualRecipient(),
+                                  notifications.get(0).getText(), notifications.get(0).getSlideDeck());
     builder.setContentIntent(notifications.get(0).getPendingIntent(context));
 
     long timestamp = notifications.get(0).getTimestamp();
@@ -214,8 +230,8 @@ public class MessageNotifier {
     ListIterator<NotificationItem> iterator = notifications.listIterator(notifications.size());
 
     while(iterator.hasPrevious()) {
-      builder.addMessageBody(iterator.previous().getText());
-
+      NotificationItem item = iterator.previous();
+      builder.addMessageBody(item.getRecipients(), item.getIndividualRecipient(), item.getText());
     }
 
     if (signal) {
@@ -260,52 +276,49 @@ public class MessageNotifier {
   }
 
   private static void sendInThreadNotification(Context context, Recipients recipients) {
-    try {
-      if (!TextSecurePreferences.isInThreadNotifications(context)) {
-        return;
-      }
-
-      Uri uri = recipients != null ? recipients.getRingtone() : null;
-
-      if (uri == null) {
-        String ringtone = TextSecurePreferences.getNotificationRingtone(context);
-
-        if (ringtone == null) {
-          Log.w(TAG, "ringtone preference was null.");
-          return;
-        } else {
-          uri = Uri.parse(ringtone);
-        }
-      }
-
-      if (uri == null) {
-        Log.w(TAG, "couldn't parse ringtone uri " + TextSecurePreferences.getNotificationRingtone(context));
-        return;
-      }
-
-      MediaPlayer player = new MediaPlayer();
-      player.setAudioStreamType(AudioManager.STREAM_NOTIFICATION);
-      player.setDataSource(context, uri);
-      player.setLooping(false);
-      player.setVolume(0.25f, 0.25f);
-      player.prepare();
-
-      final AudioManager audioManager = ((AudioManager)context.getSystemService(Context.AUDIO_SERVICE));
-
-      audioManager.requestAudioFocus(null, AudioManager.STREAM_NOTIFICATION,
-                                     AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK);
-
-      player.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
-        @Override
-        public void onCompletion(MediaPlayer mp) {
-          audioManager.abandonAudioFocus(null);
-        }
-      });
-
-      player.start();
-    } catch (IOException ioe) {
-      Log.w("MessageNotifier", ioe);
+    if (!TextSecurePreferences.isInThreadNotifications(context)) {
+      return;
     }
+
+    Uri uri = recipients != null ? recipients.getRingtone() : null;
+
+    if (uri == null) {
+      String ringtone = TextSecurePreferences.getNotificationRingtone(context);
+
+      if (ringtone == null) {
+        Log.w(TAG, "ringtone preference was null.");
+        return;
+      }
+
+      uri = Uri.parse(ringtone);
+
+      if (uri == null) {
+        Log.w(TAG, "couldn't parse ringtone uri " + ringtone);
+        return;
+      }
+    }
+
+    if (uri.toString().isEmpty()) {
+      Log.d(TAG, "ringtone uri is empty");
+      return;
+    }
+
+    Ringtone ringtone = RingtoneManager.getRingtone(context, uri);
+
+    if (ringtone == null) {
+      Log.w(TAG, "ringtone is null");
+      return;
+    }
+
+    if (Build.VERSION.SDK_INT >= 21) {
+      ringtone.setAudioAttributes(new AudioAttributes.Builder().setContentType(AudioAttributes.CONTENT_TYPE_UNKNOWN)
+                                                               .setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_INSTANT)
+                                                               .build());
+    } else {
+      ringtone.setStreamType(AudioManager.STREAM_NOTIFICATION);
+    }
+
+    ringtone.play();
   }
 
   private static void appendPushNotificationState(@NonNull Context context,
@@ -353,10 +366,8 @@ public class MessageNotifier {
       CharSequence body             = record.getDisplayBody();
       Recipients   threadRecipients = null;
       SlideDeck    slideDeck        = null;
-      long         timestamp;
-
-      if (record.isPush()) timestamp = record.getDateSent();
-      else                 timestamp = record.getDateReceived();
+      long         timestamp        = record.getTimestamp();
+      
 
       if (threadId != -1) {
         threadRecipients = DatabaseFactory.getThreadDatabase(context).getRecipientsForThreadId(threadId);

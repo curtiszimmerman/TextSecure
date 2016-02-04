@@ -50,7 +50,7 @@ public class SmsMessageRecord extends MessageRecord {
                           int status, List<IdentityKeyMismatch> mismatches)
   {
     super(context, id, body, recipients, individualRecipient, recipientDeviceId,
-          dateSent, dateReceived, threadId, getGenericDeliveryStatus(status), receiptCount, type,
+          dateSent, dateReceived, threadId, status, receiptCount, type,
           mismatches, new LinkedList<NetworkFailure>());
   }
 
@@ -73,13 +73,13 @@ public class SmsMessageRecord extends MessageRecord {
     } else if (MmsSmsColumns.Types.isLegacyType(type)) {
       return emphasisAdded(context.getString(R.string.MessageRecord_message_encrypted_with_a_legacy_protocol_version_that_is_no_longer_supported));
     } else if (isBundleKeyExchange()) {
-      return emphasisAdded(context.getString(R.string.SmsMessageRecord_received_message_with_unknown_identity_key_click_to_process));
+      return emphasisAdded(context.getString(R.string.SmsMessageRecord_received_message_with_unknown_identity_key_tap_to_process));
     } else if (isIdentityUpdate()) {
       return emphasisAdded(context.getString(R.string.SmsMessageRecord_received_updated_but_unknown_identity_information));
     } else if (isKeyExchange() && isOutgoing()) {
       return new SpannableString("");
     } else if (isKeyExchange() && !isOutgoing()) {
-      return emphasisAdded(context.getString(R.string.ConversationItem_received_key_exchange_message_click_to_process));
+      return emphasisAdded(context.getString(R.string.ConversationItem_received_key_exchange_message_tap_to_process));
     } else if (SmsDatabase.Types.isDuplicateMessageType(type)) {
       return emphasisAdded(context.getString(R.string.SmsMessageRecord_duplicate_message));
     } else if (SmsDatabase.Types.isDecryptInProgressType(type)) {
@@ -103,17 +103,5 @@ public class SmsMessageRecord extends MessageRecord {
   @Override
   public boolean isMmsNotification() {
     return false;
-  }
-
-  private static int getGenericDeliveryStatus(int status) {
-    if (status == SmsDatabase.Status.STATUS_NONE) {
-      return MessageRecord.DELIVERY_STATUS_NONE;
-    } else if (status >= SmsDatabase.Status.STATUS_FAILED) {
-      return MessageRecord.DELIVERY_STATUS_FAILED;
-    } else if (status >= SmsDatabase.Status.STATUS_PENDING) {
-      return MessageRecord.DELIVERY_STATUS_PENDING;
-    } else {
-      return MessageRecord.DELIVERY_STATUS_RECEIVED;
-    }
   }
 }
